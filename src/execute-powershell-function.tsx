@@ -1,30 +1,48 @@
-import { Action, ActionPanel, getPreferenceValues, Icon, List, showToast, Toast } from "@raycast/api";
+import { Action, ActionPanel, getPreferenceValues, Icon, List, showToast, Toast, Cache } from "@raycast/api";
 import { usePromise } from "@raycast/utils";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { homedir } from "os";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, realpathSync, statSync } from "fs";
 import { useEffect, useState } from "react";
 
 const execAsync = promisify(exec);
+const cache = new Cache();
 
 interface Preferences {
     scriptPath: string;
 }
+
 function escapePowerShellPath(path: string): string {
     return path
-        .replace(/'/g, "''") // Escape single quotes
-        .replace(/\\/g, '\\\\'); // Escape backslashes
+        .replace(/'/g, "''")
+        .replace(/\\/g, '\\\\');
 }
 
-async function fetchFunctionsFromScript(filePath: string): Promise<string[]> {
+async function getFileKey(filePath: string): Promise<string> {
+    const stats = statSync(filePath);
+    return `functions-${filePath}-${stats.mtimeMs}`;
+}
+
+async function fetchFunctions(filePath: string, forceReload = false): Promise<string[]> {
     try {
+        const cacheKey = await getFileKey(filePath);
+
+        // Try to get from cache first
+        if (!forceReload) {
+            const cached = cache.get(cacheKey);
+            if (cached) {
+                console.log('[CACHE] Returning cached functions');
+                return JSON.parse(cached);
+            }
+        }
+
+        console.log('[CACHE] Loading fresh functions');
         const escapedPath = escapePowerShellPath(filePath);
 
-        // Method 1: Try AST parsing first (most accurate)
-        try {
-            const astCommand = `
-                $ErrorActionPreference = 'Stop';
+        const command = `
+            $ErrorActionPreference = 'Stop';
+            try {
                 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
                     '${escapedPath}', 
                     [ref]$null, 
@@ -36,46 +54,28 @@ async function fetchFunctionsFromScript(filePath: string): Promise<string[]> {
                     $node.Parameters.Count -eq 0 
                 }, $true);
                 if ($functions) { $functions.Name | ConvertTo-Json -Compress }
-            `.replace(/\n\s+/g, ' ').trim();
-
-            const { stdout: astStdout } = await execAsync(
-                `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${astCommand}"`
-            );
-
-            if (astStdout.trim()) {
-                return JSON.parse(astStdout);
-            }
-        } catch (astError) {
-            console.log('AST parsing failed, falling back to regex method:', astError);
-        }
-
-        // Method 2: Fallback to regex if AST fails
-        const regexCommand = `
-            $ErrorActionPreference = 'Stop';
-            $content = Get-Content -Path '${escapedPath}' -Raw;
-            $matches = [regex]::Matches(
-                $content, 
-                'function\\s+([^\\s{]+)\\s*\\{(?:[^{}]*|\\{(?:[^{}]*|\\{[^{}]*\\})*\\})*\\}'
-            );
-            if ($matches.Success) {
-                $matches.Groups[1].Value | Select-Object -Unique | ConvertTo-Json -Compress
+            } catch {
+                Write-Error "Error parsing script: $_";
+                exit 1;
             }
         `.replace(/\n\s+/g, ' ').trim();
 
-        const { stdout: regexStdout } = await execAsync(
-            `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${regexCommand}"`
+        const { stdout } = await execAsync(
+            `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
         );
 
-        return regexStdout.trim() ? JSON.parse(regexStdout) : [];
+        const functions = stdout.trim() ? JSON.parse(stdout) : [];
+
+        // Store in cache (persists between command invocations)
+        cache.set(cacheKey, JSON.stringify(functions));
+
+        return functions;
     } catch (error) {
-        console.error('Both methods failed to parse script:', error);
+        console.error('Error fetching functions:', error);
         throw new Error(`Failed to parse PowerShell script: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
-/**
- * Executes a PowerShell function
- */
 async function executePowerShellFunction(functionName: string, scriptPath: string) {
     const toast = await showToast({
         style: Toast.Style.Animated,
@@ -101,7 +101,6 @@ async function executePowerShellFunction(functionName: string, scriptPath: strin
         toast.style = Toast.Style.Failure;
         toast.title = `Failed to Execute "${functionName}"`;
         toast.message = error instanceof Error ? error.message : "An unknown error occurred";
-        console.log(toast.message)
     }
 }
 
@@ -109,6 +108,7 @@ export default function Command() {
     const preferences = getPreferenceValues<Preferences>();
     const [resolvedPath, setResolvedPath] = useState<string>();
     const [pathError, setPathError] = useState<string>();
+    const [cacheBuster, setCacheBuster] = useState(0);
 
     useEffect(() => {
         try {
@@ -138,14 +138,22 @@ export default function Command() {
         data: functions,
         isLoading,
         error,
-        revalidate,
     } = usePromise(
-        async (path: string | undefined) => {
+        async (path: string | undefined, bust: number) => {
             if (!path) return [];
-            return await fetchFunctionsFromScript(path);
+            return await fetchFunctions(path, bust > 0);
         },
-        [resolvedPath]
+        [resolvedPath, cacheBuster]
     );
+
+    const handleReload = () => {
+        console.log('[CACHE] Force reload requested');
+        if (resolvedPath) {
+            const cacheKey = getFileKey(resolvedPath);
+            cache.remove(cacheKey); // Clear the cache
+        }
+        setCacheBuster(prev => prev + 1); // Force re-fetch
+    };
 
     if (pathError) {
         return (
@@ -191,7 +199,7 @@ export default function Command() {
                                 <Action
                                     title="Reload Functions"
                                     icon={Icon.Repeat}
-                                    onAction={revalidate}
+                                    onAction={handleReload}
                                     shortcut={{ modifiers: ["cmd"], key: "r" }}
                                 />
                             </ActionPanel>
@@ -213,7 +221,7 @@ export default function Command() {
                             <Action
                                 title="Reload Functions"
                                 icon={Icon.Repeat}
-                                onAction={revalidate}
+                                onAction={handleReload}
                             />
                         </ActionPanel>
                     }
