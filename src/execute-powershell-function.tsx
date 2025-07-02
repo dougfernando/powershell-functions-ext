@@ -86,7 +86,7 @@ async function executePowerShellFunction(functionName: string, scriptPath: strin
         const command = `. '${escapedPath}'; ${functionName}`;
 
         const { stdout, stderr } = await execAsync(
-            `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
+            `pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
         );
 
         if (stderr) {
