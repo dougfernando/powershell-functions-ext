@@ -32,7 +32,6 @@ async function fetchFunctions(filePath: string, forceReload = false): Promise<st
         if (!forceReload) {
             const cached = cache.get(cacheKey);
             if (cached) {
-                console.log('[CACHE] Returning cached functions');
                 return JSON.parse(cached);
             }
         }
@@ -101,6 +100,7 @@ async function executePowerShellFunction(functionName: string, scriptPath: strin
         toast.style = Toast.Style.Failure;
         toast.title = `Failed to Execute "${functionName}"`;
         toast.message = error instanceof Error ? error.message : "An unknown error occurred";
+        console.error(`Error executing function "${functionName}":`, error);
     }
 }
 
