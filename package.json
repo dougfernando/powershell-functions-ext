@@ -27,7 +27,7 @@
             "description": "The full path to your .ps1 file. Use ~ for your home directory.",
             "type": "textfield",
             "required": true,
-            "default": "C:\\Users\\User\\OneDrive\\03 Projects\\scripts\\my_ps1_functions.ps1"
+            "default": "~\\scripts\\my_ps1_functions.ps1"
         }
     ],
     "dependencies": {
