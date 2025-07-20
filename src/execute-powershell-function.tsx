@@ -1,186 +1,129 @@
-import { Action, ActionPanel, Cache, getPreferenceValues, Icon, List, showToast, Toast } from "@raycast/api"
-import { usePromise } from "@raycast/utils"
-import { exec } from "child_process"
-import { promisify } from "util"
-import { homedir } from "os"
-import { existsSync, realpathSync, statSync } from "fs"
-import { useEffect, useState } from "react"
+import { Action, ActionPanel, Cache, getPreferenceValues, Icon, List, showToast, Toast } from "@raycast/api";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { homedir } from "os";
+import { existsSync, realpathSync } from "fs";
+import { readFile } from "fs/promises";
+import { useEffect, useState } from "react";
 
-const execAsync = promisify(exec)
-const cache = new Cache()
+const execAsync = promisify(exec);
+const cache = new Cache();
+const FUNCTIONS_CACHE_KEY = "powershell-functions";
 
 interface Preferences {
-    scriptPath: string
+    scriptPath: string;
 }
 
 function escapePowerShellPath(path: string): string {
-    return path.replace(/'/g, "''").replace(/\\/g, "\\\\")
-}
-
-async function getFileKey(filePath: string): Promise<string> {
-    const stats = statSync(filePath)
-    return `functions-${filePath}-${stats.mtimeMs}`
-}
-
-async function fetchFunctions(filePath: string, forceReload = false): Promise<string[]> {
-    try {
-        const cacheKey = await getFileKey(filePath)
-
-        // Try to get from cache first
-        if (!forceReload) {
-            const cached = cache.get(cacheKey)
-            if (cached) {
-                return JSON.parse(cached)
-            }
-        }
-
-        console.log("[CACHE] Loading fresh functions")
-        const escapedPath = escapePowerShellPath(filePath)
-
-        const command = `
-            $ErrorActionPreference = 'Stop';
-            try {
-                $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-                    '${escapedPath}', 
-                    [ref]$null, 
-                    [ref]$null
-                );
-                $functions = $ast.FindAll({ 
-                    param($node) 
-                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and 
-                    $node.Parameters.Count -eq 0 
-                }, $true);
-                if ($functions) { $functions.Name | ConvertTo-Json -Compress }
-            } catch {
-                Write-Error "Error parsing script: $_";
-                exit 1;
-            }
-        `
-            .replace(/\n\s+/g, " ")
-            .trim()
-
-        const { stdout } = await execAsync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`)
-
-        const functions = stdout.trim() ? JSON.parse(stdout) : []
-
-        // Store in cache (persists between command invocations)
-        cache.set(cacheKey, JSON.stringify(functions))
-
-        return functions
-    } catch (error) {
-        console.error("Error fetching functions:", error)
-        throw new Error(`Failed to parse PowerShell script: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    return path.replace(/'/g, "''").replace(/\\/g, "\\\\");
 }
 
 async function executePowerShellFunction(functionName: string, scriptPath: string) {
     const toast = await showToast({
         style: Toast.Style.Animated,
         title: `Executing "${functionName}"...`,
-    })
+    });
 
     try {
-        const escapedPath = escapePowerShellPath(scriptPath)
-        const command = `. '${escapedPath}'; ${functionName}`
+        const expandedPath = scriptPath.replace(/^~/, homedir());
+        if (!existsSync(expandedPath)) {
+            throw new Error(`File not found at: ${expandedPath}`);
+        }
+        const realPath = realpathSync(expandedPath);
+        const escapedPath = escapePowerShellPath(realPath);
+        const command = `. '${escapedPath}'; ${functionName}`;
 
-        const { stdout, stderr } = await execAsync(`pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`)
+        const { stdout, stderr } = await execAsync(`pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`);
 
         if (stderr) {
-            throw new Error(stderr)
+            throw new Error(stderr);
         }
 
-        toast.style = Toast.Style.Success
-        toast.title = `Executed "${functionName}" Successfully`
-        toast.message = stdout.trim() ? `Output: ${stdout.trim()}` : undefined
+        toast.style = Toast.Style.Success;
+        toast.title = `Executed "${functionName}" Successfully`;
+        toast.message = stdout.trim() ? `Output: ${stdout.trim()}` : undefined;
     } catch (error) {
-        toast.style = Toast.Style.Failure
-        toast.title = `Failed to Execute "${functionName}"`
-        toast.message = error instanceof Error ? error.message : "An unknown error occurred"
-        console.error(`Error executing function "${functionName}":`, error)
+        toast.style = Toast.Style.Failure;
+        toast.title = `Failed to Execute "${functionName}"`;
+        toast.message = error instanceof Error ? error.message : "An unknown error occurred";
+        console.error(`Error executing function "${functionName}":`, error);
     }
 }
 
 export default function Command() {
-    const preferences = getPreferenceValues<Preferences>()
-    const [resolvedPath, setResolvedPath] = useState<string>()
-    const [pathError, setPathError] = useState<string>()
-    const [cacheBuster, setCacheBuster] = useState(0)
+    const preferences = getPreferenceValues<Preferences>();
+    const [functions, setFunctions] = useState<string[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string>();
 
     useEffect(() => {
-        try {
-            const initialPath = preferences.scriptPath
-            if (!initialPath) {
-                throw new Error("PowerShell Script Path preference is not set.")
-            }
-
-            const expandedPath = initialPath.replace(/^~/, homedir())
-
-            if (!existsSync(expandedPath)) {
-                throw new Error(`File not found at: ${expandedPath}`)
-            }
-
-            const realPath = realpathSync(expandedPath)
-            setResolvedPath(realPath)
-            setPathError(undefined)
-        } catch (e) {
-            const errorMessage = e instanceof Error ? e.message : "An unknown error occurred while resolving the path."
-            setPathError(errorMessage)
-            setResolvedPath(undefined)
-            console.error("Path resolution error:", e)
+        // Load from cache immediately on mount
+        const cachedFunctions = cache.get(FUNCTIONS_CACHE_KEY);
+        if (cachedFunctions) {
+            setFunctions(JSON.parse(cachedFunctions));
         }
-    }, [preferences.scriptPath])
-
-    const {
-        data: functions,
-        isLoading,
-        error,
-    } = usePromise(
-        async (path: string | undefined, bust: number) => {
-            if (!path) return []
-            return await fetchFunctions(path, bust > 0)
-        },
-        [resolvedPath, cacheBuster],
-    )
+        setIsLoading(false);
+    }, []);
 
     const handleReload = async () => {
-        console.log("[CACHE] Force reload requested")
-        if (resolvedPath) {
-            const cacheKey = await getFileKey(resolvedPath)
-            cache.remove(cacheKey) // Clear the cache
-        }
-        setCacheBuster(prev => prev + 1) // Force re-fetch
-    }
+        setIsLoading(true);
+        setError(undefined);
+        try {
+            const initialPath = preferences.scriptPath;
+            if (!initialPath) {
+                throw new Error("PowerShell Script Path preference is not set.");
+            }
 
-    if (pathError) {
-        return (
-            <List>
+            const expandedPath = initialPath.replace(/^~/, homedir());
+
+            if (!existsSync(expandedPath)) {
+                throw new Error(`File not found at: ${expandedPath}`);
+            }
+
+            const realPath = realpathSync(expandedPath);
+            const content = await readFile(realPath, "utf-8");
+            const regex = /^function\s+([a-zA-Z0-9_-]+)\s*(?:\(\s*\))?\s*\{/gm;
+            const foundFunctions: string[] = [];
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+                foundFunctions.push(match[1]);
+            }
+
+            setFunctions(foundFunctions);
+            cache.set(FUNCTIONS_CACHE_KEY, JSON.stringify(foundFunctions));
+            await showToast({
+                style: Toast.Style.Success,
+                title: "Functions Reloaded",
+                message: `Found ${foundFunctions.length} parameter-less functions.`,
+            });
+        } catch (e) {
+            const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+            setError(errorMessage);
+            await showToast({
+                style: Toast.Style.Failure,
+                title: "Error Reloading Functions",
+                message: errorMessage,
+            });
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <List isLoading={isLoading} searchBarPlaceholder="Filter functions...">
+            {error ? (
                 <List.EmptyView
-                    title="Invalid Path"
-                    description={pathError}
+                    title="Error"
+                    description={error}
                     icon={Icon.XMarkCircle}
                     actions={
                         <ActionPanel>
-                            <Action
-                                title="Reload"
-                                icon={Icon.Repeat}
-                                onAction={() => {
-                                    setPathError(undefined)
-                                    setResolvedPath(undefined)
-                                }}
-                            />
+                            <Action title="Reload Functions" icon={Icon.Repeat} onAction={handleReload} />
                         </ActionPanel>
                     }
                 />
-            </List>
-        )
-    }
-
-    const fetchError = error ? `Failed to read functions: ${error.message}` : undefined
-
-    return (
-        <List isLoading={isLoading && !error && !pathError} searchBarPlaceholder="Filter functions...">
-            {functions && functions.length > 0 ? (
-                functions.map(funcName => (
+            ) : functions.length > 0 ? (
+                functions.map((funcName) => (
                     <List.Item
                         key={funcName}
                         title={funcName}
@@ -190,7 +133,7 @@ export default function Command() {
                                 <Action
                                     title="Execute Function"
                                     icon={Icon.Play}
-                                    onAction={() => executePowerShellFunction(funcName, resolvedPath!)}
+                                    onAction={() => executePowerShellFunction(funcName, preferences.scriptPath)}
                                 />
                                 <Action
                                     title="Reload Functions"
@@ -204,12 +147,11 @@ export default function Command() {
                 ))
             ) : (
                 <List.EmptyView
-                    title={isLoading ? "Loading Functions..." : "No Parameter-less Functions Found"}
+                    title={isLoading ? "Loading..." : "No Cached Functions Found"}
                     description={
-                        fetchError ||
-                        (isLoading
-                            ? "Reading your script..."
-                            : `Ensure the file at "${resolvedPath}" contains functions without arguments.`)
+                        isLoading
+                            ? "Please wait..."
+                            : "Press Cmd+R to load functions from your PowerShell script."
                     }
                     icon={Icon.Cog}
                     actions={
@@ -220,5 +162,5 @@ export default function Command() {
                 />
             )}
         </List>
-    )
+    );
 }
