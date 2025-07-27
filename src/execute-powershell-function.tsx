@@ -39,28 +39,10 @@ async function fetchFunctions(filePath: string, forceReload = false): Promise<st
         console.log('[CACHE] Loading fresh functions');
         const escapedPath = escapePowerShellPath(filePath);
 
-        const command = `
-            $ErrorActionPreference = 'Stop';
-            try {
-                $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-                    '${escapedPath}', 
-                    [ref]$null, 
-                    [ref]$null
-                );
-                $functions = $ast.FindAll({ 
-                    param($node) 
-                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and 
-                    $node.Parameters.Count -eq 0 
-                }, $true);
-                if ($functions) { $functions.Name | ConvertTo-Json -Compress }
-            } catch {
-                Write-Error "Error parsing script: $_";
-                exit 1;
-            }
-        `.replace(/\n\s+/g, ' ').trim();
+        const command = `$ErrorActionPreference='Stop';try{$ast=[System.Management.Automation.Language.Parser]::ParseFile('${escapedPath}',[ref]$null,[ref]$null);$functions=$ast.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Parameters.Count -eq 0},$true);if($functions){$functions.Name|ConvertTo-Json -Compress}}catch{Write-Error "Error parsing script: $_";exit 1;}`;
 
         const { stdout } = await execAsync(
-            `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
+            `pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
         );
 
         const functions = stdout.trim() ? JSON.parse(stdout) : [];
@@ -146,10 +128,10 @@ export default function Command() {
         [resolvedPath, cacheBuster]
     );
 
-    const handleReload = () => {
+    const handleReload = async () => {
         console.log('[CACHE] Force reload requested');
         if (resolvedPath) {
-            const cacheKey = getFileKey(resolvedPath);
+            const cacheKey = await getFileKey(resolvedPath);
             cache.remove(cacheKey); // Clear the cache
         }
         setCacheBuster(prev => prev + 1); // Force re-fetch
