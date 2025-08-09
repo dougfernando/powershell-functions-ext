@@ -20,8 +20,8 @@ function escapePowerShellPath(path: string): string {
 }
 
 async function getFileKey(filePath: string): Promise<string> {
-    const stats = statSync(filePath);
-    return `functions-${filePath}-${stats.mtimeMs}`;
+    // No need for statSync if we don't use mtimeMs
+    return `functions-${filePath}`; // Cache key only based on file path
 }
 
 async function fetchFunctions(filePath: string, forceReload = false): Promise<string[]> {
