@@ -3,7 +3,7 @@ import { usePromise } from "@raycast/utils";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { homedir } from "os";
-import { existsSync, realpathSync, statSync } from "fs";
+import { existsSync, realpathSync, readFileSync } from "fs";
 import { useEffect, useState } from "react";
 
 const execAsync = promisify(exec);
@@ -13,6 +13,11 @@ interface Preferences {
     scriptPath: string;
 }
 
+interface PowerShellFunction {
+    name: string;
+    icon: string;
+}
+
 function escapePowerShellPath(path: string): string {
     return path
         .replace(/'/g, "''")
@@ -20,15 +25,13 @@ function escapePowerShellPath(path: string): string {
 }
 
 async function getFileKey(filePath: string): Promise<string> {
-    // No need for statSync if we don't use mtimeMs
-    return `functions-${filePath}`; // Cache key only based on file path
+    return `functions-${filePath}`;
 }
 
-async function fetchFunctions(filePath: string, forceReload = false): Promise<string[]> {
+async function fetchFunctions(filePath: string, forceReload = false): Promise<PowerShellFunction[]> {
     try {
         const cacheKey = await getFileKey(filePath);
 
-        // Try to get from cache first
         if (!forceReload) {
             const cached = cache.get(cacheKey);
             if (cached) {
@@ -37,17 +40,27 @@ async function fetchFunctions(filePath: string, forceReload = false): Promise<st
         }
 
         console.log('[CACHE] Loading fresh functions');
-        const escapedPath = escapePowerShellPath(filePath);
+        const fileContent = readFileSync(filePath, 'utf-8');
+        const functions: PowerShellFunction[] = [];
+        const lines = fileContent.split(/\r?\n/);
 
-        const command = `$ErrorActionPreference='Stop';try{$ast=[System.Management.Automation.Language.Parser]::ParseFile('${escapedPath}',[ref]$null,[ref]$null);$functions=$ast.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Parameters.Count -eq 0},$true);if($functions){$functions.Name|ConvertTo-Json -Compress}}catch{Write-Error "Error parsing script: $_";exit 1;}`;
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const functionMatch = line.match(/function ([\w-]+)/);
 
-        const { stdout } = await execAsync(
-            `pwsh.exe -NoProfile -ExecutionPolicy Bypass -Command "${command}"`
-        );
+            if (functionMatch) {
+                let icon = 'Icon.Cog'; // Default icon
+                if (i > 0) {
+                    const prevLine = lines[i - 1];
+                    const iconMatch = prevLine.match(/# @raycast.icon (Icon\.\w+)/);
+                    if (iconMatch) {
+                        icon = iconMatch[1];
+                    }
+                }
+                functions.push({ name: functionMatch[1], icon: icon });
+            }
+        }
 
-        const functions = stdout.trim() ? JSON.parse(stdout) : [];
-
-        // Store in cache (persists between command invocations)
         cache.set(cacheKey, JSON.stringify(functions));
 
         return functions;
@@ -60,7 +73,8 @@ async function fetchFunctions(filePath: string, forceReload = false): Promise<st
 async function executePowerShellFunction(functionName: string, scriptPath: string) {
     const toast = await showToast({
         style: Toast.Style.Animated,
-        title: `Executing "${functionName}"...`,
+        title: `Executing "${functionName}"...
+`,
     });
 
     try {
@@ -166,17 +180,17 @@ export default function Command() {
     return (
         <List isLoading={isLoading && !error && !pathError} searchBarPlaceholder="Filter functions...">
             {functions && functions.length > 0 ? (
-                functions.map((funcName) => (
+                functions.map((func, index) => (
                     <List.Item
-                        key={funcName}
-                        title={funcName}
-                        icon={Icon.Cog}
+                        key={`${func.name}-${index}`}
+                        title={func.name}
+                        icon={(Icon[func.icon.split('.')[1] as keyof typeof Icon]) || Icon.Cog}
                         actions={
                             <ActionPanel>
                                 <Action
                                     title="Execute Function"
                                     icon={Icon.Play}
-                                    onAction={() => executePowerShellFunction(funcName, resolvedPath!)}
+                                    onAction={() => executePowerShellFunction(func.name, resolvedPath!)}
                                 />
                                 <Action
                                     title="Reload Functions"
