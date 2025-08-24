@@ -184,7 +184,7 @@ export default function Command() {
                     <List.Item
                         key={`${func.name}-${index}`}
                         title={func.name}
-                        icon={(Icon[func.icon.split('.')[1] as keyof typeof Icon]) || Icon.Cog}
+                        icon={(func.icon && Icon[func.icon.split('.')[1] as keyof typeof Icon]) || Icon.Cog}
                         actions={
                             <ActionPanel>
                                 <Action
