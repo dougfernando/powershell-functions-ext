@@ -1,7 +1,7 @@
 {
     "$schema": "https://www.raycast.com/schemas/extension.json",
     "name": "powershell-fn-ext",
-    "title": "PowerShell Functions",
+    "title": "Powershell Functions",
     "description": "Search functions in a file and let you execute them",
     "icon": "Icon.png",
     "author": "dfs",
@@ -15,7 +15,7 @@
     "commands": [
         {
             "name": "execute-powershell-function",
-            "title": "Execute PowerShell Function",
+            "title": "Execute Powershell Function",
             "description": "Lists and executes functions from a user-defined PowerShell script.",
             "mode": "view"
         }
