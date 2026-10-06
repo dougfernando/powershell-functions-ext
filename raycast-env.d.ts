@@ -8,7 +8,7 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** PowerShell Script Path - The full path to your .ps1 file. Use ~ for your home directory. */
+  /** PowerShell Script Path - Select the .ps1 file containing the functions to expose in Raycast. */
   "scriptPath": string
 }
 
